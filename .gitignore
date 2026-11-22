@@ -1,0 +1,18 @@
+# Build output
+*.exe
+*.dll
+*.test
+*.out
+
+# Local editor / OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Runtime data (actually stored under %APPDATA%\TeamoRouterCalendar)
+panel.json
+settings.json
+*.corrupt
+trc_*.txt
+trc_*.ps1
