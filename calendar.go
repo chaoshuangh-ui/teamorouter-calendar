@@ -520,6 +520,17 @@ func (w *calendarWidget) Paint(p gui.Painter) {
 	}
 	p.Save()
 	defer p.Restore()
+
+	// The Modern theme paints its opaque window background (#F6F6F8) across
+	// the whole client before this widget runs. GOUI only auto-erases the four
+	// corners for integrated chrome, which we do not use (WindowChromeNone),
+	// so that near-white fill survives outside our rounded card as "white
+	// pointed corners". Erase the entire client to transparent first (ClearPath
+	// also removes content painted underneath this widget), then paint the
+	// card on top. Pixels outside the card's arc stay truly transparent.
+	rw, rh := w.Rect().Width, w.Rect().Height
+	p.ClearPath(graphics.MoveTo(0, 0).LineTo(rw, 0).LineTo(rw, rh).LineTo(0, rh).Close())
+
 	p.SetTransform(geometry.Scale(w.scaleK, w.scaleK))
 
 	// The card fills the entire client. Nothing is painted outside its
