@@ -506,6 +506,26 @@ func text(p gui.Painter, s string, x, y, w, h, size float32, weight typography.F
 	p.DrawTextLayout(geometry.Point{X: x, Y: y + (h-th)/2}, tl)
 }
 
+// textWrapped is like text, but lets the layout wrap long content inside w so
+// it cannot overflow horizontally. Used for memo text of variable length.
+func textWrapped(p gui.Painter, s string, x, y, w, h, size float32, weight typography.FontWeight, col color.Color, align typography.TextAlignment) {
+	if gui.App == nil || gui.App.Typography() == nil || w <= 0 || h <= 0 {
+		return
+	}
+	tl, err := gui.App.Typography().NewTextLayout(s, typography.TextFormat{
+		Font:      typography.FontInfo{Family: "Segoe UI", Size: size, Weight: weight},
+		WrapMode:  typography.WrapWordChar,
+		TextAlign: align,
+		TextColor: col,
+	}, w, h)
+	if err != nil {
+		return
+	}
+	defer tl.Destroy()
+	_, th := tl.MeasureSize()
+	p.DrawTextLayout(geometry.Point{X: x, Y: y + (h-th)/2}, tl)
+}
+
 // ---- painting ----
 func (w *calendarWidget) Paint(p gui.Painter) {
 	m := w.model

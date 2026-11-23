@@ -49,10 +49,12 @@ const (
 	todoCardW            float32 = 344
 	todoMinCardH         float32 = 142
 
-	todoRowH   float32 = 20
-	todoRowTop float32 = 360
-	todoCheckX float32 = 46
-	todoDelX   float32 = 356
+	todoRowH     float32 = 20
+	todoRowTop   float32 = 360
+	todoCheckX   float32 = 46
+	todoDelX     float32 = 356
+	todoTextSize float32 = 11
+	todoTextW            = todoDelX - todoCheckX - 40 // width available to memo text
 
 	// A slim scrollbar in the right margin is a passive position indicator;
 	// scrolling itself is done with the mouse wheel.
@@ -65,16 +67,74 @@ const (
 	todoInputW, todoInputH float32 = 344, 16
 )
 
-func todoRowCenterY(i int) float32 { return todoRowTop + float32(i)*todoRowH + todoRowH/2 }
+// todoTextLineCount measures how many wrapped lines a memo needs in the todo
+// text column. WrapWordChar breaks CJK text (which has no spaces) as well as
+// long Latin words, so no content can run past the column edge.
+func todoTextLineCount(s string) int {
+	if s == "" || gui.App == nil || gui.App.Typography() == nil {
+		return 1
+	}
+	tl, err := gui.App.Typography().NewTextLayout(s, typography.TextFormat{
+		Font:      typography.FontInfo{Family: "Segoe UI", Size: todoTextSize, Weight: typography.FontWeightRegular},
+		WrapMode:  typography.WrapWordChar,
+		TextAlign: typography.TextAlignBegin,
+	}, todoTextW, 1e4)
+	if err != nil {
+		return 1
+	}
+	defer tl.Destroy()
+	lines, _ := tl.MeasureMetrics()
+	if len(lines) == 0 {
+		return 1
+	}
+	return len(lines)
+}
 
-// todoCardHeight grows with the number of tasks so the whole list can be
-// revealed by scrolling the page, instead of being clipped to six rows.
-func todoCardHeight(n int) float32 {
-	h := float32(22 + n*20)
+// todoRowHeight is the height of one memo row: one line per wrapped line.
+func todoRowHeight(s string) float32 {
+	return float32(todoTextLineCount(s)) * todoRowH
+}
+
+// todoRowLayout caches the vertical geometry of every memo row so that card
+// height, hit-testing and painting all agree on the same wrapped positions.
+type todoRowLayout struct {
+	tops    []float32
+	heights []float32
+	total   float32
+}
+
+func computeTodoRows(items []todoItem) todoRowLayout {
+	r := todoRowLayout{
+		tops:    make([]float32, len(items)),
+		heights: make([]float32, len(items)),
+	}
+	y := todoRowTop
+	for i, it := range items {
+		h := todoRowHeight(it.Text)
+		r.tops[i] = y
+		r.heights[i] = h
+		y += h
+	}
+	r.total = y - todoRowTop
+	return r
+}
+
+func todoRowCenterY(rows todoRowLayout, i int) float32 {
+	return rows.tops[i] + rows.heights[i]/2
+}
+
+// todoCardHeightFromRows grows the card to fit every wrapped memo line so the
+// whole list can be revealed by scrolling instead of overflowing the card.
+func todoCardHeightFromRows(rows todoRowLayout) float32 {
+	h := float32(22) + rows.total
 	if h < todoMinCardH {
 		h = todoMinCardH
 	}
 	return h
+}
+
+func todoCardHeight(items []todoItem) float32 {
+	return todoCardHeightFromRows(computeTodoRows(items))
 }
 
 // clampPanelScroll keeps the scroll offset inside the content that currently
@@ -105,8 +165,9 @@ func (w *calendarWidget) panelHitTest(p geometry.Point) int {
 
 	today := time.Now().Format("2006-01-02")
 	items := m.panel.todayTodos(today)
+	rows := computeTodoRows(items)
 	for i := range items {
-		cy := todoRowCenterY(i)
+		cy := todoRowCenterY(rows, i)
 		if pointInCircle(cp, todoCheckX, cy, 9) {
 			return hitTodoToggle + i
 		}
@@ -120,8 +181,8 @@ func (w *calendarWidget) panelHitTest(p geometry.Point) int {
 // maxPanelScroll is the distance needed to reveal the bottom of the content.
 func (w *calendarWidget) maxPanelScroll() float32 {
 	today := time.Now().Format("2006-01-02")
-	n := len(w.model.panel.todayTodos(today))
-	max := todoCardY + todoCardHeight(n) - panelContentBottom
+	items := w.model.panel.todayTodos(today)
+	max := todoCardY + todoCardHeight(items) - panelContentBottom
 	if max < 0 {
 		return 0
 	}
@@ -131,8 +192,8 @@ func (w *calendarWidget) maxPanelScroll() float32 {
 // panelContentHeight is the full height of the scrollable content surface.
 func (w *calendarWidget) panelContentHeight() float32 {
 	today := time.Now().Format("2006-01-02")
-	n := len(w.model.panel.todayTodos(today))
-	h := todoCardY + todoCardHeight(n) - panelContentTop
+	items := w.model.panel.todayTodos(today)
+	h := todoCardY + todoCardHeight(items) - panelContentTop
 	if h < panelViewH {
 		return panelViewH
 	}
@@ -491,7 +552,8 @@ func (w *calendarWidget) paintTodos(p gui.Painter) {
 
 	today := time.Now().Format("2006-01-02")
 	items := w.model.panel.todayTodos(today)
-	h := todoCardHeight(len(items))
+	rows := computeTodoRows(items)
+	h := todoCardHeightFromRows(rows)
 	p.FillRoundRect(geometry.Rect(todoCardX, todoCardY, todoCardW, h), 16, graphics.RGBA(27, 31, 42, 255))
 
 	if len(items) == 0 {
@@ -500,7 +562,9 @@ func (w *calendarWidget) paintTodos(p gui.Painter) {
 	}
 
 	for i, it := range items {
-		cy := todoRowCenterY(i)
+		cy := todoRowCenterY(rows, i)
+		rowTop := rows.tops[i]
+		rowH := rows.heights[i]
 
 		boxBg := graphics.RGBA(44, 50, 66, 255)
 		boxEdge := graphics.RGB(110, 120, 142)
@@ -521,7 +585,7 @@ func (w *calendarWidget) paintTodos(p gui.Painter) {
 		if it.Done {
 			fg = graphics.RGB(120, 130, 150)
 		}
-		text(p, it.Text, todoCheckX+18, todoRowTop+float32(i)*todoRowH, todoDelX-todoCheckX-40, todoRowH, 11,
+		textWrapped(p, it.Text, todoCheckX+18, rowTop, todoTextW, rowH, todoTextSize,
 			typography.FontWeightRegular, fg, typography.TextAlignBegin)
 
 		delBg := graphics.RGBA(44, 50, 66, 255)
