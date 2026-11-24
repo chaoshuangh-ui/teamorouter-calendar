@@ -19,6 +19,8 @@
 - `8459d61` Fix white corners: erase theme window background before drawing rounded card
 - `d747a22` Add HANDOFF.md: project state and conversation record for continuation
 - `cad24e3` Wrap long memo text and grow todo rows to fit
+- `3c323ca` Update HANDOFF with memo wrapping change
+- `8373b5b` Fix weather responsiveness: async fetch, fast retry, live clock
 
 推送命令：`git push origin master`（PowerShell 会把进度写 stderr 显示成红色报错，实际推送成功，用 `git log`/`git status` 确认即可）。
 
@@ -28,7 +30,7 @@
 
 - **月历**：6 个月、周一起始、上/下月切换、一天一格、按当天成本着色、格内仅日期号；点击日期弹详情。
 - **弹窗额度**：三服务额度；TeamoRouter 余额只显示一次；Codex 显示剩余量；Antigravity 显示一行 `GPT+CLAUDE`。
-- **天气**：IP 自动定位（ipapi.co，fallback ipinfo.io）+ Open-Meteo；只显示时间/气候/湿度/温度；温度 1 位小数。
+- **天气**：IP 自动定位（ipapi.co，fallback ipinfo.io）+ Open-Meteo；只显示时间/气候/湿度/温度；温度 1 位小数；时间显示实时时钟（每分钟跳），不受 30 分钟刷新间隔影响。
 - **工作时间**：10 分钟鼠标/键盘无输入视为暂停，关机也暂停；每天结束保留前一天时长；一周趋势折线图 + 折线点时长小弹窗；按两小时一段，只显示 `sec>0` 的桶，旧无明细日期仍只显示总时长。
 - **备忘录**：添加、打勾、删除；未完成任务顺延到第二天；输入用独立临时窗口保证中文输入法可用；长文本自动换行，行高随换行数增长，卡片与滚动区同步扩展。
 - **窗口行为**：无边框、透明、四角圆弧透明；header 拖动；锁定位置并持久化；桌面底层、不抢焦点、不置顶、无任务栏图标；开机自启。
@@ -45,6 +47,7 @@
 - **工作桶**：固定 12 个两小时桶（`bucketHours=2`, `bucketCount=12`）；旧 `segments` 已迁移为 `buckets`。
 - **四角透明**（最近修复）：窗口是 `WindowChromeNone`，GOUI 自带 `clearRoundCorners` 只对 integrated chrome 生效，所以主题会把不透明 `#F6F6F8` 铺满客户区，圆角外留下白色楔形。修复：在 `Paint()` 开头用 `p.ClearPath(...)` 把整个客户区擦成透明，再画圆角卡片。
 - **备忘换行**（最近修复）：TextLayout 默认 `WrapNone`，长文本会横向溢出。`textWrapped()` 用 `WrapWordChar` 换行；`todoTextLineCount()` 用 `MeasureMetrics()` 测行数；`computeTodoRows()` 统一算出每条的顶部/高度，卡片高度、滚动范围、滚动条、命中检测共用同一套布局（`todoRowLayout`）。中文无空格也能断行。
+- **天气刷新**（最近修复）：HTTP 请求原先直接在 1 秒 tracker 循环里跑，慢请求会卡住计时和重绘；失败后仍把 `weatherAt` 刷成当前时间，导致要等 30 分钟才重试。现在改为独立 `weatherWorker` goroutine + 缓冲 `weatherReq` 触发；成功 30 分钟后再取，失败 1 分钟后重试（`weatherOK` 区分）。`paintWeather` 显示 `time.Now()` 实时时钟而非抓取时刻，所以面板每秒重绘时时间会跳。
 
 ### 配置 / 数据位置
 - API Key 只从 `C:\Users\32517\.config\opencode\.secrets\teamorouter-key` 读取，不写配置、不明文打印。
@@ -106,8 +109,8 @@ go build -ldflags="-H=windowsgui" -o TeamoRouterCalendar.exe .
 |---|---|
 | `calendar.go` | 缩放核心、`Paint()`、命中检测、顶栏、月历、弹窗、缩放按钮、`text()` / `textWrapped()` 文本绘制 |
 | `panel.go` | 面板绘制 / 滚动 / 折线 tooltip / 两小时桶 / 滚轮缩放 / 备忘换行布局 |
-| `panel_data.go` | 工作 tracker、天气、额度状态（稳定，避免回归） |
-| `main.go` | 启动、桌面挂载、刷新/退出生命周期 |
+| `panel_data.go` | 工作 tracker、天气（异步 worker / 失败快速重试）、额度状态 |
+| `main.go` | 启动、桌面挂载、刷新/退出生命周期、初始化天气请求通道 |
 | `settings.go` | `settings.Zoom` 与原子保存 |
 | `data.go` / `codex.go` / `antigravity.go` | 三服务额度 API（已加固） |
 | `desktop.go` | `screenToParent` / `parentOf` / `WS_CHILD` / WorkerW / 空闲检测 |
