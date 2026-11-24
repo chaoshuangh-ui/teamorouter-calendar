@@ -336,11 +336,9 @@ func (w *calendarWidget) paintWeather(p gui.Painter, wt weatherData) {
 		return
 	}
 
-	timeLabel := wt.Time
-	if timeLabel == "" {
-		timeLabel = time.Now().Format("15:04")
-	}
-	text(p, timeLabel, weatherCardX+16, weatherCardY+10, 150, 40, 29,
+	// Show the live clock, not the time the HTTP request happened. The panel
+	// repaints every second, so this stays current between weather refreshes.
+	text(p, time.Now().Format("15:04"), weatherCardX+16, weatherCardY+10, 150, 40, 29,
 		typography.FontWeightSemibold, graphics.RGB(244, 246, 252), typography.TextAlignBegin)
 
 	cond := wt.Desc

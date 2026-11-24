@@ -382,6 +382,12 @@ const (
 	idlePause   = 10 * time.Minute
 	bucketHours = 2
 	bucketCount = 24 / bucketHours
+
+	// A successful reading is reused for this long; a failed one is retried
+	// much sooner so a transient network hiccup at startup cannot leave the
+	// card stuck on "天气获取中..." for half an hour.
+	weatherRefreshEvery = 30 * time.Minute
+	weatherRetryEvery   = time.Minute
 )
 
 type workTracker struct {
@@ -389,10 +395,14 @@ type workTracker struct {
 	notify func()     // requests a repaint; must be safe from any goroutine
 	mu     sync.Mutex // guards the snapshot fields below
 	idle   bool       // true when input has been absent for idlePause
-	// weather state, refreshed in the same loop
-	weather   weatherData
-	weatherAt time.Time
-	carry     time.Duration // sub-second remainder between ticks
+	// weather state, fetched on a dedicated worker so a slow HTTP request
+	// cannot block work-time tracking or repaints
+	weather     weatherData
+	weatherAt   time.Time
+	weatherOK   bool          // whether the last fetch succeeded
+	weatherBusy bool          // a fetch is in progress
+	weatherReq  chan struct{} // buffered trigger for the weather worker
+	carry       time.Duration // sub-second remainder between ticks
 }
 
 func (t *workTracker) run(stop <-chan struct{}) {
@@ -402,7 +412,11 @@ func (t *workTracker) run(stop <-chan struct{}) {
 	lastTick := lastMove
 	lastSave := lastMove
 
-	t.refreshWeather()
+	// Weather is fetched on its own worker: an HTTP request can take several
+	// seconds, and blocking this loop would stall work-time tracking and
+	// repaints. A buffered request channel coalesces overlapping triggers.
+	go t.weatherWorker(stop)
+	t.requestWeather()
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -487,12 +501,10 @@ func (t *workTracker) run(stop <-chan struct{}) {
 				t.panel.save()
 			}
 
-			// weather every 30 minutes
-			t.mu.Lock()
-			needWeather := now.Sub(t.weatherAt) > 30*time.Minute
-			t.mu.Unlock()
-			if needWeather {
-				t.refreshWeather()
+			// Request a weather refresh when due; the worker performs the
+			// actual HTTP call off this loop.
+			if t.weatherDue(now) {
+				t.requestWeather()
 			}
 			// persist every 30 seconds
 			if now.Sub(lastSave) >= 30*time.Second {
@@ -506,12 +518,63 @@ func (t *workTracker) run(stop <-chan struct{}) {
 	}
 }
 
-func (t *workTracker) refreshWeather() {
-	w := fetchWeather(t.panel)
+// requestWeather queues a fetch without blocking. The channel has capacity 1,
+// so repeated triggers while a fetch is pending collapse into one request.
+func (t *workTracker) requestWeather() {
+	if t.weatherReq == nil {
+		return
+	}
+	select {
+	case t.weatherReq <- struct{}{}:
+	default:
+	}
+}
+
+// weatherDue reports whether a new reading should be started. A failed fetch
+// gets a short retry interval; a successful one lasts weatherRefreshEvery.
+func (t *workTracker) weatherDue(now time.Time) bool {
 	t.mu.Lock()
-	t.weather = w
-	t.weatherAt = time.Now()
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	if t.weatherBusy {
+		return false
+	}
+	interval := weatherRefreshEvery
+	if !t.weatherOK {
+		interval = weatherRetryEvery
+	}
+	return t.weatherAt.IsZero() || now.Sub(t.weatherAt) >= interval
+}
+
+// weatherWorker performs weather HTTP requests off the 1-second tracker loop.
+func (t *workTracker) weatherWorker(stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.weatherReq:
+			t.mu.Lock()
+			if t.weatherBusy {
+				t.mu.Unlock()
+				continue
+			}
+			t.weatherBusy = true
+			t.mu.Unlock()
+
+			w := fetchWeather(t.panel)
+
+			t.mu.Lock()
+			t.weather = w
+			t.weatherOK = w.Available
+			t.weatherAt = time.Now()
+			t.weatherBusy = false
+			t.mu.Unlock()
+
+			// Repaint once the new reading (or a retry-worthy failure) lands.
+			if t.notify != nil {
+				t.notify()
+			}
+		}
+	}
 }
 
 func (t *workTracker) snapshot() (weatherData, int64, map[string]int64, map[string][]int64, bool, bool) {
@@ -539,7 +602,6 @@ func (t *workTracker) snapshot() (weatherData, int64, map[string]int64, map[stri
 type weatherData struct {
 	Available bool
 	City      string
-	Time      string
 	Desc      string
 	Humidity  int
 	Temp      float64
@@ -548,7 +610,7 @@ type weatherData struct {
 var panelHTTP = &http.Client{Timeout: 12 * time.Second}
 
 func fetchWeather(p *panelState) weatherData {
-	out := weatherData{Time: time.Now().Format("15:04")}
+	var out weatherData
 
 	p.mu.Lock()
 	loc := p.data.WeatherLoc

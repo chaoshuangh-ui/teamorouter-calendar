@@ -170,7 +170,8 @@ func main() {
 		// Work-time + weather tracker. It ticks every second and asks the GUI
 		// thread to repaint the panel while it is visible.
 		model.tracker = &workTracker{
-			panel: model.panel,
+			panel:      model.panel,
+			weatherReq: make(chan struct{}, 1),
 			notify: func() {
 				app.Post(func() {
 					if model.page == 1 && model.widget != nil {
